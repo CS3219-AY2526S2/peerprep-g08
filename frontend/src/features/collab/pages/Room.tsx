@@ -101,7 +101,7 @@ export default function Room() {
       })
       .catch((error) => {
         if (error.response?.status === 403) {
-          alert("Room is full!");
+          alert("This room is already at full capacity. Only the original two participants can join.");
         } else {
           alert("Room does not exist!");
         }
