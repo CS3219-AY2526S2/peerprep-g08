@@ -1,0 +1,111 @@
+name: CI - PR Validation
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "api-gateway/**"
+      - "user-service/**"
+      - "question-service/**"
+      - "collab-service/**"
+      - "matching-service/**"
+      - "frontend/**"
+      - ".github/workflows/ci.yml"
+      - "docker-compose.yml"
+
+jobs:
+  # Linting job for all services and frontend
+  lint:
+    runs-on: ubuntu-latest
+    name: Lint Services
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Lint Backend Services
+        run: |
+          for service in api-gateway user-service question-service collab-service matching-service; do
+            if [ -f "$service/package.json" ]; then
+              echo "Linting $service..."
+              cd "$service"
+              npm ci --omit=dev 2>/dev/null || npm ci
+              if npm run | grep -q "lint"; then
+                npm run lint || echo "Linting issues in $service (non-blocking)"
+              fi
+              cd ..
+            fi
+          done
+
+      - name: Lint Frontend
+        working-directory: ./frontend
+        run: |
+          npm ci
+          if npm run | grep -q "lint"; then
+            npm run lint || echo "Linting issues in frontend (non-blocking)"
+          fi
+
+  # Unit tests for user-service, question-service and collab-service
+  unit-tests:
+    runs-on: ubuntu-latest
+    name: Unit Tests
+    strategy:
+      matrix:
+        service: [user-service, question-service, matching-service, collab-service]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: "./${{ matrix.service }}/package-lock.json"
+
+      - name: Install dependencies
+        working-directory: ./${{ matrix.service }}
+        run: npm ci
+
+      - name: Run tests
+        working-directory: ./${{ matrix.service }}
+        run: npm test
+
+  # Docker build verification for all services
+  docker-build:
+    runs-on: ubuntu-latest
+    name: Docker Build
+    strategy:
+      matrix:
+        service:
+          [
+            api-gateway,
+            user-service,
+            question-service,
+            collab-service,
+            matching-service,
+            frontend,
+          ]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.service }} image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./${{ matrix.service }}
+          push: false
+          tags: peerprep-${{ matrix.service }}:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

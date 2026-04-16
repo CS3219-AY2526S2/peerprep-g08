@@ -1,0 +1,20 @@
+{
+  "name": "peerprep-g08",
+  "version": "1.0.0",
+  "private": true,
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "wait-on": "^9.0.4"
+  },
+  "scripts": {
+    "dev:clean": "npx kill-port 3000 3001 3219 8080 3002",
+    "dev:gateway": "npm --prefix api-gateway start",
+    "dev:user": "npm --prefix user-service run dev",
+    "dev:question": "npm --prefix question-service run dev",
+    "dev:collab": "npm --prefix collab-service run dev",
+    "dev:matching": "npm --prefix matching-service run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:services": "concurrently -n user,question,collab,matching \"npm run dev:user\" \"npm run dev:question\" \"npm run dev:collab\" \"npm run dev:matching\"",
+    "dev": "npm run dev:clean && concurrently -k -n services,gateway,frontend \"npm run dev:services\" \"npx wait-on http://localhost:3001 http://localhost:8080 http://localhost:3002 && npm run dev:gateway\" \"npx wait-on http://localhost:3000 && npm run dev:frontend\""
+  }
+}

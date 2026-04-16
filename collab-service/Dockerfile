@@ -1,0 +1,22 @@
+# Stage 1: Build
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+COPY package*.json ./
+COPY scripts/ ./scripts/
+RUN npm ci --only=production
+
+COPY . .
+
+# Stage 2: Runtime
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY --from=builder /app ./
+
+# Expose the service port
+EXPOSE 3219
+
+CMD ["node", "server.js"]

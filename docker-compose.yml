@@ -1,0 +1,132 @@
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: peerprep-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - peerprep-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:alpine
+    container_name: peerprep-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - peerprep-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  user-service:
+    build: ./user-service
+    container_name: peerprep-user-service
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - ENV=PROD
+    env_file:
+      - ./user-service/.env
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - peerprep-network
+
+  matching-service:
+    build: ./matching-service
+    container_name: matching-service
+    ports:
+      - "3002:3002"
+    environment:
+      - PORT=3002
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - QUESTION_SERVICE_URL=http://question-service:8080
+      - COLLAB_SERVICE_URL=http://collab-service:3219
+    env_file:
+      - ./matching-service/.env
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - peerprep-network
+
+  question-service:
+    build: ./question-service
+    container_name: peerprep-question-service
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+    env_file:
+      - ./question-service/.env
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - peerprep-network
+
+  collab-service:
+    build: ./collab-service
+    container_name: peerprep-collab-service
+    ports:
+      - "3219:3219"
+    environment:
+      - PORT=3219
+      - REDIS_URL=redis://redis:6379
+    env_file:
+      - ./collab-service/.env
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - peerprep-network
+
+  api-gateway:
+    build: ./api-gateway
+    container_name: peerprep-api-gateway
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - USER_SERVICE_URL=http://user-service:3001
+      - QUESTION_SERVICE_URL=http://question-service:8080
+      - MATCHING_SERVICE_URL=http://matching-service:3002
+      - COLLAB_SERVICE_URL=http://collab-service:3219
+    depends_on:
+      user-service:
+        condition: service_started
+      question-service:
+        condition: service_started
+    networks:
+      - peerprep-network
+
+  frontend:
+    build: ./frontend
+    container_name: peerprep-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - api-gateway
+    networks:
+      - peerprep-network
+
+networks:
+  peerprep-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
