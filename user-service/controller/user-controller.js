@@ -1,9 +1,8 @@
 import bcrypt from "bcrypt";
-import crypto from "crypto";
+import crypto from "node:crypto";
 import { isValidObjectId } from "mongoose";
 
 import {
-  createUser as _createUser,
   deleteUserById as _deleteUserById,
   validateAdminOperation as _validateAdminOperation,
   findAllUsers as _findAllUsers,
@@ -16,93 +15,91 @@ import {
   createAdminCode as _createAdminCode,
   findAndUseAdminCode as _findAndUseAdminCode,
   updateUserProfilePicture as _updateUserProfilePicture,
+  createOtp as _createOtp
 } from "../model/repository.js";
 import { queueAdminOperation } from "../utils/admin-operation-queue.js";
-import jwt from "jsonwebtoken";
 
 import { isValidEmail, validatePassword, validateUsername } from "../utils/validators.js";
 import { bufferToDataUri } from "../middleware/profile-picture-upload.js";
-import { createOtp as _createOtp } from "../model/repository.js";
 import { sendOtpEmail } from "../utils/mailer.js";
-
 
 export async function createUser(req, res) {
   try {
     const { username, email, password, code } = req.body;
     console.log(`[USER-SERVICE] Registration request received for: ${username} (${email})`);
 
-    if (username && email && password) {
-      // F1.1.1 – Validate email format
-      if (!isValidEmail(email)) {
-        console.warn(`[USER-SERVICE] Registration failed: Invalid email format (${email})`);
-        return res.status(400).json({ message: "Invalid email format." });
-      }
-
-      // F3.2.1 – Validate username format
-      const unValidation = validateUsername(username);
-      if (!unValidation.valid) {
-        console.warn(`[USER-SERVICE] Registration failed: Invalid username (${username}) - ${unValidation.message}`);
-        return res.status(400).json({ message: unValidation.message });
-      }
-
-      // F1.2 – Validate password strength
-      const pwValidation = validatePassword(password);
-      if (!pwValidation.valid) {
-        console.warn(`[USER-SERVICE] Registration failed: Weak password for user ${username}`);
-        return res.status(400).json({ message: pwValidation.message });
-      }
-
-      // F1.1.1 – Uniqueness check
-      const existingUser = await _findUserByUsernameOrEmail(username, email);
-      if (existingUser) {
-        console.warn(`[USER-SERVICE] Registration failed: Username or email already exists (${username}/${email})`);
-        return res.status(409).json({ message: "username or email already exists" });
-      }
-
-      let isAdmin = false;
-      if (code) {
-        const adminCode = await _findAndUseAdminCode(code);
-        if (!adminCode) {
-          console.warn(`[USER-SERVICE] Registration failed: Invalid admin code (${code})`);
-          return res.status(400).json({ message: "Invalid or expired admin code" });
-        }
-        isAdmin = true;
-      }
-
-      console.log(`[USER-SERVICE] Processing registration for ${username}...`);
-      const salt = bcrypt.genSaltSync(10);
-      const hashedPassword = bcrypt.hashSync(password, salt);
-
-      // Generate OTP and store user details in the OTP record INSTEAD of the user collection
-      try {
-        const otp = String(crypto.randomInt(100000, 999999));
-        
-        const userData = {
-          username,
-          password: hashedPassword,
-          isAdmin: isAdmin
-        };
-
-        console.log(`[USER-SERVICE] Saving temporary registration and generating OTP...`);
-        await _createOtp(email, otp, "email_verification", userData);
-        
-        console.log(`[USER-SERVICE] Calling mailer to send OTP code...`);
-        await sendOtpEmail(email, otp);
-
-        console.log(`[USER-SERVICE] Registration initiation successful for ${username}.`);
-        return res.status(201).json({
-          message: `Registration initiated for ${username}. Please check your email for the verification code.`,
-          data: { username, email }, // Return basic info, user ID doesn't exist yet
-        });
-      } catch (otpErr) {
-        console.error("[USER-SERVICE] Error during OTP/Temporary registration phase:", otpErr);
-        return res.status(500).json({
-          message: "Failed to start registration process. Please try again later.",
-        });
-      }
-    } else {
+    if (!username || !email || !password) {
       console.warn("[USER-SERVICE] Registration failed: Missing required fields");
       return res.status(400).json({ message: "username and/or email and/or password are missing" });
+    }
+
+    // F1.1.1 – Validate email format
+    if (!isValidEmail(email)) {
+      console.warn(`[USER-SERVICE] Registration failed: Invalid email format (${email})`);
+      return res.status(400).json({ message: "Invalid email format." });
+    }
+
+    // F3.2.1 – Validate username format
+    const unValidation = validateUsername(username);
+    if (!unValidation.valid) {
+      console.warn(`[USER-SERVICE] Registration failed: Invalid username (${username}) - ${unValidation.message}`);
+      return res.status(400).json({ message: unValidation.message });
+    }
+
+    // F1.2 – Validate password strength
+    const pwValidation = validatePassword(password);
+    if (!pwValidation.valid) {
+      console.warn(`[USER-SERVICE] Registration failed: Weak password for user ${username}`);
+      return res.status(400).json({ message: pwValidation.message });
+    }
+
+    // F1.1.1 – Uniqueness check
+    const existingUser = await _findUserByUsernameOrEmail(username, email);
+    if (existingUser) {
+      console.warn(`[USER-SERVICE] Registration failed: Username or email already exists (${username}/${email})`);
+      return res.status(409).json({ message: "username or email already exists" });
+    }
+
+    let isAdmin = false;
+    if (code) {
+      const adminCode = await _findAndUseAdminCode(code);
+      if (!adminCode) {
+        console.warn(`[USER-SERVICE] Registration failed: Invalid admin code (${code})`);
+        return res.status(400).json({ message: "Invalid or expired admin code" });
+      }
+      isAdmin = true;
+    }
+
+    console.log(`[USER-SERVICE] Processing registration for ${username}...`);
+    const salt = bcrypt.genSaltSync(10);
+    const hashedPassword = bcrypt.hashSync(password, salt);
+
+    // Generate OTP and store user details in the OTP record INSTEAD of the user collection
+    try {
+      const otp = String(crypto.randomInt(100000, 999999));
+      
+      const userData = {
+        username,
+        password: hashedPassword,
+        isAdmin: isAdmin
+      };
+
+      console.log(`[USER-SERVICE] Saving temporary registration and generating OTP...`);
+      await _createOtp(email, otp, "email_verification", userData);
+      
+      console.log(`[USER-SERVICE] Calling mailer to send OTP code...`);
+      await sendOtpEmail(email, otp);
+
+      console.log(`[USER-SERVICE] Registration initiation successful for ${username}.`);
+      return res.status(201).json({
+        message: `Registration initiated for ${username}. Please check your email for the verification code.`,
+        data: { username, email }, // Return basic info, user ID doesn't exist yet
+      });
+    } catch (otpErr) {
+      console.error("[USER-SERVICE] Error during OTP/Temporary registration phase:", otpErr);
+      return res.status(500).json({
+        message: "Failed to start registration process. Please try again later.",
+      });
     }
   } catch (err) {
     console.error("[USER-SERVICE] Unexpected Create User Error:", err);
@@ -143,61 +140,61 @@ export async function getAllUsers(req, res) {
 export async function updateUser(req, res) {
   try {
     const { username, email, password } = req.body;
-    if (username || email || password) {
-      const userId = req.params.id;
-      if (!isValidObjectId(userId)) {
-        return res.status(404).json({ message: `User ${userId} not found` });
-      }
-      const user = await _findUserById(userId);
-      if (!user) {
-        return res.status(404).json({ message: `User ${userId} not found` });
-      }
-
-      // F1.1.1 – Validate updated email format
-      if (email && !isValidEmail(email)) {
-        return res.status(400).json({ message: "Invalid email format." });
-      }
-
-      // F3.2.1 – Validate updated username format
-      if (username) {
-        const unValidation = validateUsername(username);
-        if (!unValidation.valid) {
-          return res.status(400).json({ message: unValidation.message });
-        }
-      }
-
-      // F1.2 – Validate updated password strength
-      if (password) {
-        const pwValidation = validatePassword(password);
-        if (!pwValidation.valid) {
-          return res.status(400).json({ message: pwValidation.message });
-        }
-      }
-
-      if (username || email) {
-        let existingUser = await _findUserByUsername(username);
-        if (existingUser && existingUser.id !== userId) {
-          return res.status(409).json({ message: "username already exists" });
-        }
-        existingUser = await _findUserByEmail(email);
-        if (existingUser && existingUser.id !== userId) {
-          return res.status(409).json({ message: "email already exists" });
-        }
-      }
-
-      let hashedPassword;
-      if (password) {
-        const salt = bcrypt.genSaltSync(10);
-        hashedPassword = bcrypt.hashSync(password, salt);
-      }
-      const updatedUser = await _updateUserById(userId, username, email, hashedPassword);
-      return res.status(200).json({
-        message: `Updated data for user ${userId}`,
-        data: formatUserResponse(updatedUser),
-      });
-    } else {
+    
+    // Refatorado: Early Return para quando não há campos a atualizar
+    if (!username && !email && !password) {
       return res.status(400).json({ message: "No field to update: username and email and password are all missing!" });
     }
+
+    const userId = req.params.id;
+    if (!isValidObjectId(userId)) {
+      return res.status(404).json({ message: `User ${userId} not found` });
+    }
+    
+    const user = await _findUserById(userId);
+    if (!user) {
+      return res.status(404).json({ message: `User ${userId} not found` });
+    }
+
+    // Refatorado: Validações independentes para evitar aninhamento excessivo
+    if (email && !isValidEmail(email)) {
+      return res.status(400).json({ message: "Invalid email format." });
+    }
+
+    if (username) {
+      const unValidation = validateUsername(username);
+      if (!unValidation.valid) {
+        return res.status(400).json({ message: unValidation.message });
+      }
+      const existingUser = await _findUserByUsername(username);
+      if (existingUser && existingUser.id !== userId) {
+        return res.status(409).json({ message: "username already exists" });
+      }
+    }
+
+    if (email) {
+      const existingUser = await _findUserByEmail(email);
+      if (existingUser && existingUser.id !== userId) {
+        return res.status(409).json({ message: "email already exists" });
+      }
+    }
+
+    let hashedPassword;
+    if (password) {
+      const pwValidation = validatePassword(password);
+      if (!pwValidation.valid) {
+        return res.status(400).json({ message: pwValidation.message });
+      }
+      const salt = bcrypt.genSaltSync(10);
+      hashedPassword = bcrypt.hashSync(password, salt);
+    }
+
+    const updatedUser = await _updateUserById(userId, username, email, hashedPassword);
+    return res.status(200).json({
+      message: `Updated data for user ${userId}`,
+      data: formatUserResponse(updatedUser),
+    });
+    
   } catch (err) {
     console.error(err);
     return res.status(500).json({ message: "Unknown error when updating user!" });
@@ -208,57 +205,54 @@ export async function updateUserPrivilege(req, res) {
   try {
     const { isAdmin } = req.body;
 
-    if (isAdmin !== undefined) {  // isAdmin can have boolean value true or false
-      const userId = req.params.id;
-      if (!isValidObjectId(userId)) {
-        return res.status(404).json({ message: `User ${userId} not found` });
-      }
-      const user = await _findUserById(userId);
-      if (!user) {
-        return res.status(404).json({ message: `User ${userId} not found` });
-      }
+    // Refatorado: Early Return para verificar ausência de isAdmin logo de cara
+    if (isAdmin === undefined) {
+      return res.status(400).json({ message: "isAdmin is missing!" });
+    }
 
-      if (req.user.id === userId && isAdmin === false) {
-          return res.status(403).json({
-              message: "Cannot remove own admin privileges!",
-          });
-      }
+    const userId = req.params.id;
+    if (!isValidObjectId(userId)) {
+      return res.status(404).json({ message: `User ${userId} not found` });
+    }
+    
+    const user = await _findUserById(userId);
+    if (!user) {
+      return res.status(404).json({ message: `User ${userId} not found` });
+    }
 
-      // Demotion operations (admin -> non-admin) are queued to prevent race conditions
-      // Promotion operations don't need queuing
-      if (user.isAdmin && isAdmin === false) {
-        // Attempting to demote an admin - queue it to prevent race conditions
-        try {
-          let updatedUser;
-          await queueAdminOperation(async () => {
-            // Validate that demotion won't leave system with zero admins
-            await _validateAdminOperation(userId, "demote");
-            // Now update privilege
-            updatedUser = await _updateUserPrivilegeById(userId, false);
-          });
-          return res.status(200).json({
-            message: `Updated privilege for user ${userId}`,
-            data: formatUserResponse(updatedUser),
-          });
-        } catch (err) {
-          if (err.message.includes("Cannot demote the last admin")) {
-            return res.status(403).json({
-              message: "Cannot demote the last admin. Promote another user to admin before demoting this one.",
-            });
-          }
-          throw err;
-        }
-      } else {
-        // Promotion or no-op (already has same privilege)
-        const updatedUser = await _updateUserPrivilegeById(userId, isAdmin === true);
+    if (req.user.id === userId && isAdmin === false) {
+        return res.status(403).json({
+            message: "Cannot remove own admin privileges!",
+        });
+    }
+
+    if (user.isAdmin && isAdmin === false) {
+      try {
+        let updatedUser;
+        await queueAdminOperation(async () => {
+          await _validateAdminOperation(userId, "demote");
+          updatedUser = await _updateUserPrivilegeById(userId, false);
+        });
         return res.status(200).json({
           message: `Updated privilege for user ${userId}`,
           data: formatUserResponse(updatedUser),
         });
+      } catch (err) {
+        if (err.message.includes("Cannot demote the last admin")) {
+          return res.status(403).json({
+            message: "Cannot demote the last admin. Promote another user to admin before demoting this one.",
+          });
+        }
+        throw err;
       }
-    } else {
-      return res.status(400).json({ message: "isAdmin is missing!" });
     }
+
+    const updatedUser = await _updateUserPrivilegeById(userId, isAdmin === true);
+    return res.status(200).json({
+      message: `Updated privilege for user ${userId}`,
+      data: formatUserResponse(updatedUser),
+    });
+
   } catch (err) {
     console.error(err);
     return res.status(500).json({ message: "Unknown error when updating user privilege!" });
@@ -405,5 +399,3 @@ export async function upgradeUserToAdmin(req, res) {
     return res.status(500).json({ message: "Unknown error when upgrading user!" });
   }
 }
-
-
