@@ -137,12 +137,61 @@ export async function getAllUsers(req, res) {
   }
 }
 
+function getUserUpdateValidationError({ username, email, password }) {
+  if (email && !isValidEmail(email)) {
+    return "Invalid email format.";
+  }
+
+  if (username) {
+    const usernameValidation = validateUsername(username);
+    if (!usernameValidation.valid) {
+      return usernameValidation.message;
+    }
+  }
+
+  if (password) {
+    const passwordValidation = validatePassword(password);
+    if (!passwordValidation.valid) {
+      return passwordValidation.message;
+    }
+  }
+
+  return null;
+}
+
+async function getUserUpdateConflict({ username, email, userId }) {
+  if (username) {
+    const userWithUsername = await _findUserByUsername(username);
+    if (userWithUsername && userWithUsername.id !== userId) {
+      return "username already exists";
+    }
+  }
+
+  if (email) {
+    const userWithEmail = await _findUserByEmail(email);
+    if (userWithEmail && userWithEmail.id !== userId) {
+      return "email already exists";
+    }
+  }
+
+  return null;
+}
+
+function hashPassword(password) {
+  if (!password) {
+    return undefined;
+  }
+
+  const salt = bcrypt.genSaltSync(10);
+  return bcrypt.hashSync(password, salt);
+}
+
 export async function updateUser(req, res) {
   try {
     const { username, email, password } = req.body;
-    
-    // Refatorado: Early Return para quando não há campos a atualizar
-    if (!username && !email && !password) {
+
+    const updateFields = [username, email, password];
+    if (updateFields.every((field) => !field)) {
       return res.status(400).json({ message: "No field to update: username and email and password are all missing!" });
     }
 
@@ -156,45 +205,23 @@ export async function updateUser(req, res) {
       return res.status(404).json({ message: `User ${userId} not found` });
     }
 
-    // Refatorado: Validações independentes para evitar aninhamento excessivo
-    if (email && !isValidEmail(email)) {
-      return res.status(400).json({ message: "Invalid email format." });
+    const validationError = getUserUpdateValidationError({ username, email, password });
+    if (validationError) {
+      return res.status(400).json({ message: validationError });
     }
 
-    if (username) {
-      const unValidation = validateUsername(username);
-      if (!unValidation.valid) {
-        return res.status(400).json({ message: unValidation.message });
-      }
-      const existingUser = await _findUserByUsername(username);
-      if (existingUser && existingUser.id !== userId) {
-        return res.status(409).json({ message: "username already exists" });
-      }
+    const conflict = await getUserUpdateConflict({ username, email, userId });
+    if (conflict) {
+      return res.status(409).json({ message: conflict });
     }
 
-    if (email) {
-      const existingUser = await _findUserByEmail(email);
-      if (existingUser && existingUser.id !== userId) {
-        return res.status(409).json({ message: "email already exists" });
-      }
-    }
-
-    let hashedPassword;
-    if (password) {
-      const pwValidation = validatePassword(password);
-      if (!pwValidation.valid) {
-        return res.status(400).json({ message: pwValidation.message });
-      }
-      const salt = bcrypt.genSaltSync(10);
-      hashedPassword = bcrypt.hashSync(password, salt);
-    }
+    const hashedPassword = hashPassword(password);
 
     const updatedUser = await _updateUserById(userId, username, email, hashedPassword);
     return res.status(200).json({
       message: `Updated data for user ${userId}`,
       data: formatUserResponse(updatedUser),
     });
-    
   } catch (err) {
     console.error(err);
     return res.status(500).json({ message: "Unknown error when updating user!" });
