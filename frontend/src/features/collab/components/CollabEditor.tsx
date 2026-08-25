@@ -64,7 +64,7 @@ function injectCursorStyle(clientId: number, color: string, name: string) {
 export default function CollabEditor({
   roomId,
   language = "javascript",
-  readOnly = false,
+  readOnly = false, 
   username,
   onCodeChange,
 }: CollabEditorProps) {
@@ -111,57 +111,74 @@ export default function CollabEditor({
     let awarenessTimeout: ReturnType<typeof setTimeout> | null = null;
     const otherCursors = editor.createDecorationsCollection([]);
 
+    // 1. Extract Function: Movemos a lógica pesada para uma função separada com nome claro
+    const processUserCursor = (
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      state: Record<string, any>,
+      clientId: number,
+      cursors: monacoeditor.editor.IModelDeltaDecoration[]
+    ) => {
+      // Early Return: ignora se for o próprio usuário ou se não houver seleção
+      if (clientId === wsProvider.awareness.clientID) return;
+      if (!state.selection || !state.user) return;
+
+      const anchor = Y.createAbsolutePositionFromRelativePosition(
+        state.selection.anchor,
+        ydoc
+      );
+      const head = Y.createAbsolutePositionFromRelativePosition(
+        state.selection.head,
+        ydoc
+      );
+
+      if (!anchor || !head) return;
+
+      injectCursorStyle(clientId, state.user.color, state.user.name);
+
+      // Handle cursor location
+      const headPos = model?.getPositionAt(head.index);
+      cursors.push({
+        range: new monaco.Range(
+          headPos?.lineNumber,
+          headPos?.column,
+          headPos?.lineNumber,
+          headPos?.column
+        ),
+        options: { className: `yjs-cursor-${clientId}` },
+      });
+
+      // Handle selection range
+      if (anchor.index !== head.index) {
+        const selectionStartIdx = Math.min(anchor.index, head.index);
+        const selectionEndIdx = Math.max(anchor.index, head.index);
+        const selectionStartPos = model?.getPositionAt(selectionStartIdx);
+        const selectionEndPos = model?.getPositionAt(selectionEndIdx);
+        cursors.push({
+          range: new monaco.Range(
+            selectionStartPos?.lineNumber,
+            selectionStartPos?.column,
+            selectionEndPos?.lineNumber,
+            selectionEndPos?.column
+          ),
+          options: { inlineClassName: `yjs-selection-${clientId}` },
+        });
+      }
+    };
+
+    // 2. O evento original agora fica extremamente simples de ler
     wsProvider.awareness.on("change", () => {
       otherCursors.set([]);
+      
       if (awarenessTimeout) clearTimeout(awarenessTimeout);
+      
       awarenessTimeout = setTimeout(() => {
         const cursors: monacoeditor.editor.IModelDeltaDecoration[] = [];
 
+        // Chama a função extraída para cada usuário
         wsProvider.awareness.getStates().forEach((state, clientId) => {
-          if (clientId === wsProvider.awareness.clientID) return;
-          if (!state.selection || !state.user) return;
-
-          const anchor = Y.createAbsolutePositionFromRelativePosition(
-            state.selection.anchor,
-            ydoc,
-          );
-          const head = Y.createAbsolutePositionFromRelativePosition(
-            state.selection.head,
-            ydoc,
-          );
-
-          if (!anchor || !head) return;
-
-          injectCursorStyle(clientId, state.user.color, state.user.name);
-
-          // handle cursor location
-          const headPos = model?.getPositionAt(head.index);
-          cursors.push({
-            range: new monaco.Range(
-              headPos?.lineNumber,
-              headPos?.column,
-              headPos?.lineNumber,
-              headPos?.column,
-            ),
-            options: { className: `yjs-cursor-${clientId}` },
-          });
-
-          if (anchor.index !== head.index) {
-            const selectionStartIdx = Math.min(anchor.index, head.index);
-            const selectionEndIdx = Math.max(anchor.index, head.index);
-            const selectionStartPos = model?.getPositionAt(selectionStartIdx);
-            const selectionEndPos = model?.getPositionAt(selectionEndIdx);
-            cursors.push({
-              range: new monaco.Range(
-                selectionStartPos?.lineNumber,
-                selectionStartPos?.column,
-                selectionEndPos?.lineNumber,
-                selectionEndPos?.column,
-              ),
-              options: { inlineClassName: `yjs-selection-${clientId}` },
-            });
-          }
+          processUserCursor(state, clientId, cursors);
         });
+        
         otherCursors.set(cursors);
       }, 100);
     });
