@@ -1,6 +1,35 @@
 const Question = require('../models/questionModel');
 
+const REQUIRED_QUESTION_FIELDS = [
+    'title',
+    'question',
+    'answer',
+    'difficulty',
+    'category'
+];
+
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const getQuestionData = ({
+    title,
+    question,
+    answer,
+    difficulty,
+    category,
+    tags,
+    examples
+}) => ({
+    title,
+    question,
+    answer,
+    difficulty,
+    category,
+    tags,
+    examples
+});
+
+const hasMissingRequiredField = (questionData) =>
+    REQUIRED_QUESTION_FIELDS.some((field) => !questionData[field]);
 
 // @desc    Get all questions
 // @route   GET /api/questions
@@ -175,22 +204,14 @@ const searchQuestions = async (req, res) => {
 // @route   POST /api/questions
 // @access  Public
 const addQuestion = async (req, res) => {
-    const { title, question, answer, difficulty, category, tags, examples } = req.body
+    const questionData = getQuestionData(req.body)
 
-    if (!title || !question || !answer || !difficulty || !category) {
+    if (hasMissingRequiredField(questionData)) {
         return res.status(400).json({ message: 'Please provide all required fields' })
     }   
 
     try {
-        const newQuestion = await Question.create({
-            title,
-            question,
-            answer,
-            difficulty,
-            category,
-            tags,
-            examples,
-        })
+        const newQuestion = await Question.create(questionData)
         return res.status(201).json(newQuestion)
     } catch (err) {
         console.error("[QUESTION-SERVICE] Error adding question:", err);
@@ -202,9 +223,9 @@ const addQuestion = async (req, res) => {
 // @route   PUT /api/questions/:id
 // @access  Public
 const updateQuestion = async (req, res) => {
-    const { title, question, answer, difficulty, category, tags, examples } = req.body
+    const questionData = getQuestionData(req.body)
 
-    if (!title || !question || !answer || !difficulty || !category) {
+    if (hasMissingRequiredField(questionData)) {
         return res.status(400).json({ message: 'Please provide all required fields' })
     }   
 
@@ -216,13 +237,7 @@ const updateQuestion = async (req, res) => {
             return res.status(404).json({ message: "Question not found" });
         }
 
-        updatedQuestion.title = title
-        updatedQuestion.question = question
-        updatedQuestion.answer = answer
-        updatedQuestion.difficulty = difficulty
-        updatedQuestion.category = category
-        updatedQuestion.tags = tags
-        updatedQuestion.examples = examples
+        Object.assign(updatedQuestion, questionData)
 
         await updatedQuestion.save()
 
