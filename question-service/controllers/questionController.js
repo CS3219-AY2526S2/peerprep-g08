@@ -1,5 +1,36 @@
 const Question = require('../models/questionModel');
 
+const REQUIRED_QUESTION_FIELDS = [
+    'title',
+    'question',
+    'answer',
+    'difficulty',
+    'category'
+];
+
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const getQuestionData = ({
+    title,
+    question,
+    answer,
+    difficulty,
+    category,
+    tags,
+    examples
+}) => ({
+    title,
+    question,
+    answer,
+    difficulty,
+    category,
+    tags,
+    examples
+});
+
+const hasMissingRequiredField = (questionData) =>
+    REQUIRED_QUESTION_FIELDS.some((field) => !questionData[field]);
+
 // @desc    Get all questions
 // @route   GET /api/questions
 // @access  Public  
@@ -37,7 +68,7 @@ const getQuestionById = async (req, res) => {
 const getQuestionsByTitle = async (req, res) => {
     try {
         const questions = await Question.find({
-            title: { $regex: req.params.title, $options: "i" }
+            title: { $regex: escapeRegex(req.params.title), $options: "i" }
         })
 
         return res.status(200).json(questions)
@@ -52,9 +83,10 @@ const getQuestionsByTitle = async (req, res) => {
 // @access  Public
 const getQuestionsByCategory = async (req, res) => {
     try {
-        const questions = await Question.find({ category: { $regex: new RegExp(`^${req.params.category}$`, 'i') } })
+        const questions = await Question.find({ category: req.params.category })
+            .collation({ locale: 'en', strength: 2 })
 
-        if (!questions || questions.length === 0) {
+        if (questions.length === 0) {
             return res.status(404).json({ message: "No questions found for this category" })
         }
 
@@ -172,22 +204,14 @@ const searchQuestions = async (req, res) => {
 // @route   POST /api/questions
 // @access  Public
 const addQuestion = async (req, res) => {
-    const { title, question, answer, difficulty, category, tags, examples } = req.body
+    const questionData = getQuestionData(req.body)
 
-    if (!title || !question || !answer || !difficulty || !category) {
+    if (hasMissingRequiredField(questionData)) {
         return res.status(400).json({ message: 'Please provide all required fields' })
     }   
 
     try {
-        const newQuestion = await Question.create({
-            title,
-            question,
-            answer,
-            difficulty,
-            category,
-            tags,
-            examples,
-        })
+        const newQuestion = await Question.create(questionData)
         return res.status(201).json(newQuestion)
     } catch (err) {
         console.error("[QUESTION-SERVICE] Error adding question:", err);
@@ -199,9 +223,9 @@ const addQuestion = async (req, res) => {
 // @route   PUT /api/questions/:id
 // @access  Public
 const updateQuestion = async (req, res) => {
-    const { title, question, answer, difficulty, category, tags, examples } = req.body
+    const questionData = getQuestionData(req.body)
 
-    if (!title || !question || !answer || !difficulty || !category) {
+    if (hasMissingRequiredField(questionData)) {
         return res.status(400).json({ message: 'Please provide all required fields' })
     }   
 
@@ -213,13 +237,7 @@ const updateQuestion = async (req, res) => {
             return res.status(404).json({ message: "Question not found" });
         }
 
-        updatedQuestion.title = title
-        updatedQuestion.question = question
-        updatedQuestion.answer = answer
-        updatedQuestion.difficulty = difficulty
-        updatedQuestion.category = category
-        updatedQuestion.tags = tags
-        updatedQuestion.examples = examples
+        Object.assign(updatedQuestion, questionData)
 
         await updatedQuestion.save()
 

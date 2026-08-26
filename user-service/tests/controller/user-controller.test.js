@@ -135,6 +135,30 @@ describe("createUser", () => {
     expect(res.status).toHaveBeenCalledWith(400);
   });
 
+  test.each([
+    [
+      { username: "alice", email: "invalid-email", password: "ValidPass1!" },
+      "Invalid email format.",
+    ],
+    [
+      { username: "a", email: "alice@test.com", password: "ValidPass1!" },
+      "Username must be at least 3 characters long.",
+    ],
+    [
+      { username: "alice", email: "alice@test.com", password: "weak" },
+      "Password must be at least 8 characters long.",
+    ],
+  ])("returns 400 for invalid registration data", async (body, message) => {
+    const req = { body };
+    const res = mockRes();
+
+    await createUser(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({ message });
+    expect(_findUserByUsernameOrEmail).not.toHaveBeenCalled();
+  });
+
   test("returns 409 when username or email already exists", async () => {
     _findUserByUsernameOrEmail.mockResolvedValue({ id: OTHER_ID });
 
@@ -305,6 +329,35 @@ describe("updateUser", () => {
 
     expect(res.status).toHaveBeenCalledWith(409);
     expect(res.json).toHaveBeenCalledWith({ message: "username already exists" });
+  });
+
+  test("returns 409 when new email is already taken", async () => {
+    _findUserById.mockResolvedValue({ id: VALID_ID, username: "alice", email: "a@t.com" });
+    _findUserByEmail.mockResolvedValue({ id: OTHER_ID });
+
+    const req = { body: { email: "used@test.com" }, params: { id: VALID_ID } };
+    const res = mockRes();
+
+    await updateUser(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith({ message: "email already exists" });
+  });
+
+  test.each([
+    [{ email: "invalid-email" }, "Invalid email format."],
+    [{ username: "a" }, "Username must be at least 3 characters long."],
+    [{ password: "weak" }, "Password must be at least 8 characters long."],
+  ])("returns 400 when an update field is invalid", async (body, message) => {
+    _findUserById.mockResolvedValue({ id: VALID_ID, username: "alice", email: "a@t.com" });
+
+    const req = { body, params: { id: VALID_ID } };
+    const res = mockRes();
+
+    await updateUser(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({ message });
   });
 
   test("returns 200 on a successful update", async () => {

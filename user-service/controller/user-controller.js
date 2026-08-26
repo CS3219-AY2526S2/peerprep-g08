@@ -23,84 +23,128 @@ import { isValidEmail, validatePassword, validateUsername } from "../utils/valid
 import { bufferToDataUri } from "../middleware/profile-picture-upload.js";
 import { sendOtpEmail } from "../utils/mailer.js";
 
+const ADMIN_OPERATION_CONFLICTS = {
+  demote: {
+    errorText: "Cannot demote the last admin",
+    responseMessage: "Cannot demote the last admin. Promote another user to admin before demoting this one.",
+  },
+  delete: {
+    errorText: "Cannot delete the last admin",
+    responseMessage: "Cannot delete the last admin. Promote another user to admin before removing this one.",
+  },
+};
+
+async function executeAdminOperation(userId, operation, mutation, ...mutationArgs) {
+  let result;
+
+  try {
+    await queueAdminOperation(async () => {
+      await _validateAdminOperation(userId, operation);
+      result = await mutation(userId, ...mutationArgs);
+    });
+
+    return { result };
+  } catch (err) {
+    const conflict = ADMIN_OPERATION_CONFLICTS[operation];
+    if (err.message.includes(conflict.errorText)) {
+      return { conflictMessage: conflict.responseMessage };
+    }
+
+    throw err;
+  }
+}
+
+function getRegistrationValidationError({ username, email, password }) {
+  const usernameValidation = validateUsername(username);
+  const passwordValidation = validatePassword(password);
+
+  return [
+    {
+      invalid: [username, email, password].some((field) => !field),
+      message: "username and/or email and/or password are missing",
+    },
+    { invalid: !isValidEmail(email), message: "Invalid email format." },
+    { invalid: !usernameValidation.valid, message: usernameValidation.message },
+    { invalid: !passwordValidation.valid, message: passwordValidation.message },
+  ].find(({ invalid }) => invalid)?.message;
+}
+
+async function initiateEmailVerification({ username, email, hashedPassword, isAdmin }, res) {
+  try {
+    const otp = String(crypto.randomInt(100000, 999999));
+    const userData = {
+      username,
+      password: hashedPassword,
+      isAdmin,
+    };
+
+    console.log("[USER-SERVICE] Saving temporary registration and generating OTP...");
+    await _createOtp(email, otp, "email_verification", userData);
+
+    console.log("[USER-SERVICE] Calling mailer to send OTP code...");
+    await sendOtpEmail(email, otp);
+
+    console.log(`[USER-SERVICE] Registration initiation successful for ${username}.`);
+    return res.status(201).json({
+      message: `Registration initiated for ${username}. Please check your email for the verification code.`,
+      data: { username, email },
+    });
+  } catch (err) {
+    console.error("[USER-SERVICE] Error during OTP/Temporary registration phase:", err);
+    return res.status(500).json({
+      message: "Failed to start registration process. Please try again later.",
+    });
+  }
+}
+
+async function findRequestedUser(userId, res) {
+  if (!isValidObjectId(userId)) {
+    res.status(404).json({ message: `User ${userId} not found` });
+    return null;
+  }
+
+  const user = await _findUserById(userId);
+  if (!user) {
+    res.status(404).json({ message: `User ${userId} not found` });
+    return null;
+  }
+
+  return user;
+}
+
 export async function createUser(req, res) {
   try {
     const { username, email, password, code } = req.body;
     console.log(`[USER-SERVICE] Registration request received for: ${username} (${email})`);
 
-    if (!username || !email || !password) {
-      console.warn("[USER-SERVICE] Registration failed: Missing required fields");
-      return res.status(400).json({ message: "username and/or email and/or password are missing" });
+    const validationError = getRegistrationValidationError({ username, email, password });
+    if (validationError) {
+      console.warn(`[USER-SERVICE] Registration failed for ${username}: ${validationError}`);
+      return res.status(400).json({ message: validationError });
     }
 
-    // F1.1.1 – Validate email format
-    if (!isValidEmail(email)) {
-      console.warn(`[USER-SERVICE] Registration failed: Invalid email format (${email})`);
-      return res.status(400).json({ message: "Invalid email format." });
-    }
-
-    // F3.2.1 – Validate username format
-    const unValidation = validateUsername(username);
-    if (!unValidation.valid) {
-      console.warn(`[USER-SERVICE] Registration failed: Invalid username (${username}) - ${unValidation.message}`);
-      return res.status(400).json({ message: unValidation.message });
-    }
-
-    // F1.2 – Validate password strength
-    const pwValidation = validatePassword(password);
-    if (!pwValidation.valid) {
-      console.warn(`[USER-SERVICE] Registration failed: Weak password for user ${username}`);
-      return res.status(400).json({ message: pwValidation.message });
-    }
-
-    // F1.1.1 – Uniqueness check
     const existingUser = await _findUserByUsernameOrEmail(username, email);
     if (existingUser) {
       console.warn(`[USER-SERVICE] Registration failed: Username or email already exists (${username}/${email})`);
       return res.status(409).json({ message: "username or email already exists" });
     }
 
-    let isAdmin = false;
-    if (code) {
-      const adminCode = await _findAndUseAdminCode(code);
-      if (!adminCode) {
-        console.warn(`[USER-SERVICE] Registration failed: Invalid admin code (${code})`);
-        return res.status(400).json({ message: "Invalid or expired admin code" });
-      }
-      isAdmin = true;
+    const adminCode = code ? await _findAndUseAdminCode(code) : null;
+    if (code && !adminCode) {
+      console.warn(`[USER-SERVICE] Registration failed: Invalid admin code (${code})`);
+      return res.status(400).json({ message: "Invalid or expired admin code" });
     }
 
     console.log(`[USER-SERVICE] Processing registration for ${username}...`);
     const salt = bcrypt.genSaltSync(10);
     const hashedPassword = bcrypt.hashSync(password, salt);
 
-    // Generate OTP and store user details in the OTP record INSTEAD of the user collection
-    try {
-      const otp = String(crypto.randomInt(100000, 999999));
-      
-      const userData = {
-        username,
-        password: hashedPassword,
-        isAdmin: isAdmin
-      };
-
-      console.log(`[USER-SERVICE] Saving temporary registration and generating OTP...`);
-      await _createOtp(email, otp, "email_verification", userData);
-      
-      console.log(`[USER-SERVICE] Calling mailer to send OTP code...`);
-      await sendOtpEmail(email, otp);
-
-      console.log(`[USER-SERVICE] Registration initiation successful for ${username}.`);
-      return res.status(201).json({
-        message: `Registration initiated for ${username}. Please check your email for the verification code.`,
-        data: { username, email }, // Return basic info, user ID doesn't exist yet
-      });
-    } catch (otpErr) {
-      console.error("[USER-SERVICE] Error during OTP/Temporary registration phase:", otpErr);
-      return res.status(500).json({
-        message: "Failed to start registration process. Please try again later.",
-      });
-    }
+    return initiateEmailVerification({
+      username,
+      email,
+      hashedPassword,
+      isAdmin: Boolean(adminCode),
+    }, res);
   } catch (err) {
     console.error("[USER-SERVICE] Unexpected Create User Error:", err);
     return res.status(500).json({ message: err.message || "Unknown error when creating new user!" });
@@ -110,16 +154,12 @@ export async function createUser(req, res) {
 export async function getUser(req, res) {
   try {
     const userId = req.params.id;
-    if (!isValidObjectId(userId)) {
-      return res.status(404).json({ message: `User ${userId} not found` });
+    const user = await findRequestedUser(userId, res);
+    if (!user) {
+      return res;
     }
 
-    const user = await _findUserById(userId);
-    if (!user) {
-      return res.status(404).json({ message: `User ${userId} not found` });
-    } else {
-      return res.status(200).json({ message: `Found user`, data: formatUserResponse(user) });
-    }
+    return res.status(200).json({ message: `Found user`, data: formatUserResponse(user) });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ message: "Unknown error when getting user!" });
@@ -138,39 +178,27 @@ export async function getAllUsers(req, res) {
 }
 
 function getUserUpdateValidationError({ username, email, password }) {
-  if (email && !isValidEmail(email)) {
-    return "Invalid email format.";
-  }
+  const usernameValidation = validateUsername(username);
+  const passwordValidation = validatePassword(password);
+  const validations = [
+    { provided: email, valid: isValidEmail(email), message: "Invalid email format." },
+    { provided: username, ...usernameValidation },
+    { provided: password, ...passwordValidation },
+  ];
 
-  if (username) {
-    const usernameValidation = validateUsername(username);
-    if (!usernameValidation.valid) {
-      return usernameValidation.message;
-    }
-  }
-
-  if (password) {
-    const passwordValidation = validatePassword(password);
-    if (!passwordValidation.valid) {
-      return passwordValidation.message;
-    }
-  }
-
-  return null;
+  return validations.find(({ provided, valid }) => provided && !valid)?.message ?? null;
 }
 
 async function getUserUpdateConflict({ username, email, userId }) {
-  if (username) {
-    const userWithUsername = await _findUserByUsername(username);
-    if (userWithUsername && userWithUsername.id !== userId) {
-      return "username already exists";
-    }
-  }
+  const checks = [
+    { value: username, findUser: _findUserByUsername, message: "username already exists" },
+    { value: email, findUser: _findUserByEmail, message: "email already exists" },
+  ];
 
-  if (email) {
-    const userWithEmail = await _findUserByEmail(email);
-    if (userWithEmail && userWithEmail.id !== userId) {
-      return "email already exists";
+  for (const check of checks.filter(({ value }) => value)) {
+    const matchingUser = await check.findUser(check.value);
+    if (matchingUser && matchingUser.id !== userId) {
+      return check.message;
     }
   }
 
@@ -196,13 +224,9 @@ export async function updateUser(req, res) {
     }
 
     const userId = req.params.id;
-    if (!isValidObjectId(userId)) {
-      return res.status(404).json({ message: `User ${userId} not found` });
-    }
-    
-    const user = await _findUserById(userId);
+    const user = await findRequestedUser(userId, res);
     if (!user) {
-      return res.status(404).json({ message: `User ${userId} not found` });
+      return res;
     }
 
     const validationError = getUserUpdateValidationError({ username, email, password });
@@ -238,13 +262,9 @@ export async function updateUserPrivilege(req, res) {
     }
 
     const userId = req.params.id;
-    if (!isValidObjectId(userId)) {
-      return res.status(404).json({ message: `User ${userId} not found` });
-    }
-    
-    const user = await _findUserById(userId);
+    const user = await findRequestedUser(userId, res);
     if (!user) {
-      return res.status(404).json({ message: `User ${userId} not found` });
+      return res;
     }
 
     if (req.user.id === userId && isAdmin === false) {
@@ -253,28 +273,25 @@ export async function updateUserPrivilege(req, res) {
         });
     }
 
+    let updatedUser;
+
     if (user.isAdmin && isAdmin === false) {
-      try {
-        let updatedUser;
-        await queueAdminOperation(async () => {
-          await _validateAdminOperation(userId, "demote");
-          updatedUser = await _updateUserPrivilegeById(userId, false);
-        });
-        return res.status(200).json({
-          message: `Updated privilege for user ${userId}`,
-          data: formatUserResponse(updatedUser),
-        });
-      } catch (err) {
-        if (err.message.includes("Cannot demote the last admin")) {
-          return res.status(403).json({
-            message: "Cannot demote the last admin. Promote another user to admin before demoting this one.",
-          });
-        }
-        throw err;
+      const operation = await executeAdminOperation(
+        userId,
+        "demote",
+        _updateUserPrivilegeById,
+        false,
+      );
+
+      if (operation.conflictMessage) {
+        return res.status(403).json({ message: operation.conflictMessage });
       }
+
+      updatedUser = operation.result;
+    } else {
+      updatedUser = await _updateUserPrivilegeById(userId, isAdmin === true);
     }
 
-    const updatedUser = await _updateUserPrivilegeById(userId, isAdmin === true);
     return res.status(200).json({
       message: `Updated privilege for user ${userId}`,
       data: formatUserResponse(updatedUser),
@@ -291,13 +308,9 @@ export async function deleteUser(req, res) {
     const userId = req.params.id;
     const requesterId = req.user.id;
 
-    if (!isValidObjectId(userId)) {
-      return res.status(404).json({ message: `User ${userId} not found` });
-    }
-
-    const user = await _findUserById(userId);
+    const user = await findRequestedUser(userId, res);
     if (!user) {
-      return res.status(404).json({ message: `User ${userId} not found` });
+      return res;
     }
 
     // Prevent admins from deleting themselves
@@ -307,26 +320,13 @@ export async function deleteUser(req, res) {
       });
     }
 
-    // Admin deletions are queued to prevent race conditions
-    // Non-admin deletions are direct (no need for queue)
     if (user.isAdmin) {
-      try {
-        await queueAdminOperation(async () => {
-          // Validate that deletion won't leave system with zero admins
-          await _validateAdminOperation(userId, "delete");
-          // Now delete
-          await _deleteUserById(userId);
-        });
-      } catch (err) {
-        if (err.message.includes("Cannot delete the last admin")) {
-          return res.status(403).json({
-            message: "Cannot delete the last admin. Promote another user to admin before removing this one.",
-          });
-        }
-        throw err;
+      const operation = await executeAdminOperation(userId, "delete", _deleteUserById);
+
+      if (operation.conflictMessage) {
+        return res.status(403).json({ message: operation.conflictMessage });
       }
     } else {
-      // Non-admin deletion is direct
       await _deleteUserById(userId);
     }
 
@@ -359,13 +359,9 @@ export async function updateProfilePicture(req, res) {
   try {
     const userId = req.params.id;
 
-    if (!isValidObjectId(userId)) {
-      return res.status(404).json({ message: `User ${userId} not found` });
-    }
-
-    const user = await _findUserById(userId);
+    const user = await findRequestedUser(userId, res);
     if (!user) {
-      return res.status(404).json({ message: `User ${userId} not found` });
+      return res;
     }
 
     if (!req.file) {
