@@ -97,6 +97,21 @@ async function initiateEmailVerification({ username, email, hashedPassword, isAd
   }
 }
 
+async function findRequestedUser(userId, res) {
+  if (!isValidObjectId(userId)) {
+    res.status(404).json({ message: `User ${userId} not found` });
+    return null;
+  }
+
+  const user = await _findUserById(userId);
+  if (!user) {
+    res.status(404).json({ message: `User ${userId} not found` });
+    return null;
+  }
+
+  return user;
+}
+
 export async function createUser(req, res) {
   try {
     const { username, email, password, code } = req.body;
@@ -139,16 +154,12 @@ export async function createUser(req, res) {
 export async function getUser(req, res) {
   try {
     const userId = req.params.id;
-    if (!isValidObjectId(userId)) {
-      return res.status(404).json({ message: `User ${userId} not found` });
+    const user = await findRequestedUser(userId, res);
+    if (!user) {
+      return res;
     }
 
-    const user = await _findUserById(userId);
-    if (!user) {
-      return res.status(404).json({ message: `User ${userId} not found` });
-    } else {
-      return res.status(200).json({ message: `Found user`, data: formatUserResponse(user) });
-    }
+    return res.status(200).json({ message: `Found user`, data: formatUserResponse(user) });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ message: "Unknown error when getting user!" });
@@ -225,13 +236,9 @@ export async function updateUser(req, res) {
     }
 
     const userId = req.params.id;
-    if (!isValidObjectId(userId)) {
-      return res.status(404).json({ message: `User ${userId} not found` });
-    }
-    
-    const user = await _findUserById(userId);
+    const user = await findRequestedUser(userId, res);
     if (!user) {
-      return res.status(404).json({ message: `User ${userId} not found` });
+      return res;
     }
 
     const validationError = getUserUpdateValidationError({ username, email, password });
@@ -267,13 +274,9 @@ export async function updateUserPrivilege(req, res) {
     }
 
     const userId = req.params.id;
-    if (!isValidObjectId(userId)) {
-      return res.status(404).json({ message: `User ${userId} not found` });
-    }
-    
-    const user = await _findUserById(userId);
+    const user = await findRequestedUser(userId, res);
     if (!user) {
-      return res.status(404).json({ message: `User ${userId} not found` });
+      return res;
     }
 
     if (req.user.id === userId && isAdmin === false) {
@@ -317,13 +320,9 @@ export async function deleteUser(req, res) {
     const userId = req.params.id;
     const requesterId = req.user.id;
 
-    if (!isValidObjectId(userId)) {
-      return res.status(404).json({ message: `User ${userId} not found` });
-    }
-
-    const user = await _findUserById(userId);
+    const user = await findRequestedUser(userId, res);
     if (!user) {
-      return res.status(404).json({ message: `User ${userId} not found` });
+      return res;
     }
 
     // Prevent admins from deleting themselves
@@ -372,13 +371,9 @@ export async function updateProfilePicture(req, res) {
   try {
     const userId = req.params.id;
 
-    if (!isValidObjectId(userId)) {
-      return res.status(404).json({ message: `User ${userId} not found` });
-    }
-
-    const user = await _findUserById(userId);
+    const user = await findRequestedUser(userId, res);
     if (!user) {
-      return res.status(404).json({ message: `User ${userId} not found` });
+      return res;
     }
 
     if (!req.file) {
