@@ -1,5 +1,7 @@
 const Question = require('../models/questionModel');
 
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 // @desc    Get all questions
 // @route   GET /api/questions
 // @access  Public  
@@ -37,7 +39,7 @@ const getQuestionById = async (req, res) => {
 const getQuestionsByTitle = async (req, res) => {
     try {
         const questions = await Question.find({
-            title: { $regex: req.params.title, $options: "i" }
+            title: { $regex: escapeRegex(req.params.title), $options: "i" }
         })
 
         return res.status(200).json(questions)
@@ -52,9 +54,10 @@ const getQuestionsByTitle = async (req, res) => {
 // @access  Public
 const getQuestionsByCategory = async (req, res) => {
     try {
-        const questions = await Question.find({ category: { $regex: new RegExp(`^${req.params.category}$`, 'i') } })
+        const questions = await Question.find({ category: req.params.category })
+            .collation({ locale: 'en', strength: 2 })
 
-        if (!questions || questions.length === 0) {
+        if (questions.length === 0) {
             return res.status(404).json({ message: "No questions found for this category" })
         }
 
