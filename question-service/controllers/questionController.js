@@ -8,7 +8,8 @@ const REQUIRED_QUESTION_FIELDS = [
     'category'
 ];
 
-const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const escapeRegex = (value) =>
+    value.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 
 const getQuestionData = ({
     title,
