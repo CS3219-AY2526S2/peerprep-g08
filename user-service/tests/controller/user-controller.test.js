@@ -135,6 +135,30 @@ describe("createUser", () => {
     expect(res.status).toHaveBeenCalledWith(400);
   });
 
+  test.each([
+    [
+      { username: "alice", email: "invalid-email", password: "ValidPass1!" },
+      "Invalid email format.",
+    ],
+    [
+      { username: "a", email: "alice@test.com", password: "ValidPass1!" },
+      "Username must be at least 3 characters long.",
+    ],
+    [
+      { username: "alice", email: "alice@test.com", password: "weak" },
+      "Password must be at least 8 characters long.",
+    ],
+  ])("returns 400 for invalid registration data", async (body, message) => {
+    const req = { body };
+    const res = mockRes();
+
+    await createUser(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({ message });
+    expect(_findUserByUsernameOrEmail).not.toHaveBeenCalled();
+  });
+
   test("returns 409 when username or email already exists", async () => {
     _findUserByUsernameOrEmail.mockResolvedValue({ id: OTHER_ID });
 
