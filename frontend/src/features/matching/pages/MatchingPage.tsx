@@ -36,95 +36,116 @@ export default function MatchingPage() {
   // Initialize socket connection
   useEffect(() => {
     const token = localStorage.getItem("token");
-    const newSocket = io(SOCKET_URL, {
+
+    // 1. Variável explicativa: Configuração do Socket isolada para melhorar a legibilidade
+    const socketOptions = {
       path: "/api/matching-service/socket.io",
       auth: { token: `Bearer ${token}` },
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       reconnectionAttempts: 5,
-    });
+    };
 
-    newSocket.on("connect", () => {
+    const newSocket = io(SOCKET_URL, socketOptions);
+
+    // 2. Extract Function: Funções auxiliares (callbacks) separadas para reduzir a complexidade
+    const handleConnect = () => {
       console.log("Connected to matching service");
       setError(null);
-    });
+      // CORREÇÃO: Atualização de estado movida para cá (assíncrona)
+      setSocket(newSocket);
+    };
 
-    newSocket.on("connect_error", (err: Error) => {
+    const handleConnectError = (err: Error) => {
       console.error("Socket connection error:", err.message);
       const isAuthError =
         err.message.includes("Authentication") ||
         err.message.includes("token") ||
         err.message.includes("expired");
-      setError(
-        isAuthError
-          ? `Authentication failed: ${err.message}. Please log out and log in again.`
-          : `Failed to connect to matching service: ${err.message}`
-      );
-    });
 
-    newSocket.on(
-      "match-found",
-      (data: { roomUrl?: { roomId: string }; partnerUserId: string }) => {
-        console.log("Match found!", data);
-        setIsSearching(false);
-        // Navigate to collaboration room with the matched partner
-        navigate(`/room/${data.roomUrl?.roomId}`, {
-          state: { partnerUserId: data.partnerUserId },
-        });
-      },
-    );
+      if (isAuthError) {
+        setError(`Authentication failed: ${err.message}. Please log out and log in again.`);
+      } else {
+        setError(`Failed to connect to matching service: ${err.message}`);
+      }
+    };
 
-    newSocket.on("criteria-relaxed", (data: { level: number; message: string }) => {
+    const handleMatchFound = (data: { roomUrl?: { roomId: string }; partnerUserId: string }) => {
+      console.log("Match found!", data);
+      setIsSearching(false);
+      navigate(`/room/${data.roomUrl?.roomId}`, {
+        state: { partnerUserId: data.partnerUserId },
+      });
+    };
+
+    const handleCriteriaRelaxed = (data: { level: number; message: string }) => {
       console.log("Criteria relaxed:", data.message);
       setSearchStatus(data.message);
-    });
+    };
 
-    newSocket.on("match-timeout", (data: { message: string }) => {
+    const handleMatchTimeout = (data: { message: string }) => {
       console.log("Match timeout:", data.message);
       setIsSearching(false);
       setError("No match found within 2 minutes. Please try again.");
-    });
+    };
 
-    newSocket.on("match-error", (data: { message: string }) => {
+    const handleMatchError = (data: { message: string }) => {
       console.error("Match error:", data.message);
       setIsSearching(false);
       setError(data.message);
-    });
+    };
 
-    newSocket.on("disconnect", () => {
+    const handleDisconnect = () => {
       console.log("Disconnected from matching service");
       setError("Connection lost to matching service");
-    });
+      setSocket(null); // Limpeza de segurança extra
+    };
 
-    newSocket.on("error", (err: unknown) => {
+    const handleError = (err: unknown) => {
       console.error("Socket error:", err);
       setError(`Connection error to matching service: ${getErrorMessage(err)}`);
-    });
+    };
 
-    setSocket(newSocket);
+    // 3. Registro dos eventos de forma limpa e estruturada
+    newSocket.on("connect", handleConnect);
+    newSocket.on("connect_error", handleConnectError);
+    newSocket.on("match-found", handleMatchFound);
+    newSocket.on("criteria-relaxed", handleCriteriaRelaxed);
+    newSocket.on("match-timeout", handleMatchTimeout);
+    newSocket.on("match-error", handleMatchError);
+    newSocket.on("disconnect", handleDisconnect);
+    newSocket.on("error", handleError);
 
+    // Limpeza ao desmontar o componente
     return () => {
       newSocket.disconnect();
     };
   }, [navigate]);
 
+  // 1. Extract Function: Função nomeada para o botão de fechar erro, limpando o JSX
+  const handleCloseError = () => {
+    setError(null);
+  };
+
   const handleFindMatch = async () => {
+    // 2. Early Return: Agrupando todas as validações de erro no início
     if (!selectedLanguages.length || !selectedTopics.length) {
       setError("Please select at least one language and one topic");
       return;
     }
 
-    setError(null);
-    setIsSearching(true);
-    setSearchStatus("Searching for a match...");
-
-    // Emit the find-match event
     if (!socket) {
       setError("Not connected to matching service. Please refresh.");
       setIsSearching(false);
       return;
     }
+
+    // 3. Execução segura: Só altera os estados de busca se as validações passarem
+    setError(null);
+    setIsSearching(true);
+    setSearchStatus("Searching for a match...");
+
     socket.emit("find-match", {
       userId: user?.id,
       username: user?.username,
@@ -149,7 +170,7 @@ export default function MatchingPage() {
             color="danger"
             title="Error"
             className="mb-4 w-full max-w-md"
-            onClose={() => setError(null)}
+            onClose={handleCloseError}
           >
             {error}
           </Alert>
