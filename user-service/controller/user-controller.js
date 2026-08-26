@@ -23,6 +23,37 @@ import { isValidEmail, validatePassword, validateUsername } from "../utils/valid
 import { bufferToDataUri } from "../middleware/profile-picture-upload.js";
 import { sendOtpEmail } from "../utils/mailer.js";
 
+const ADMIN_OPERATION_CONFLICTS = {
+  demote: {
+    errorText: "Cannot demote the last admin",
+    responseMessage: "Cannot demote the last admin. Promote another user to admin before demoting this one.",
+  },
+  delete: {
+    errorText: "Cannot delete the last admin",
+    responseMessage: "Cannot delete the last admin. Promote another user to admin before removing this one.",
+  },
+};
+
+async function executeAdminOperation(userId, operation, mutation, ...mutationArgs) {
+  let result;
+
+  try {
+    await queueAdminOperation(async () => {
+      await _validateAdminOperation(userId, operation);
+      result = await mutation(userId, ...mutationArgs);
+    });
+
+    return { result };
+  } catch (err) {
+    const conflict = ADMIN_OPERATION_CONFLICTS[operation];
+    if (err.message.includes(conflict.errorText)) {
+      return { conflictMessage: conflict.responseMessage };
+    }
+
+    throw err;
+  }
+}
+
 export async function createUser(req, res) {
   try {
     const { username, email, password, code } = req.body;
@@ -253,28 +284,25 @@ export async function updateUserPrivilege(req, res) {
         });
     }
 
+    let updatedUser;
+
     if (user.isAdmin && isAdmin === false) {
-      try {
-        let updatedUser;
-        await queueAdminOperation(async () => {
-          await _validateAdminOperation(userId, "demote");
-          updatedUser = await _updateUserPrivilegeById(userId, false);
-        });
-        return res.status(200).json({
-          message: `Updated privilege for user ${userId}`,
-          data: formatUserResponse(updatedUser),
-        });
-      } catch (err) {
-        if (err.message.includes("Cannot demote the last admin")) {
-          return res.status(403).json({
-            message: "Cannot demote the last admin. Promote another user to admin before demoting this one.",
-          });
-        }
-        throw err;
+      const operation = await executeAdminOperation(
+        userId,
+        "demote",
+        _updateUserPrivilegeById,
+        false,
+      );
+
+      if (operation.conflictMessage) {
+        return res.status(403).json({ message: operation.conflictMessage });
       }
+
+      updatedUser = operation.result;
+    } else {
+      updatedUser = await _updateUserPrivilegeById(userId, isAdmin === true);
     }
 
-    const updatedUser = await _updateUserPrivilegeById(userId, isAdmin === true);
     return res.status(200).json({
       message: `Updated privilege for user ${userId}`,
       data: formatUserResponse(updatedUser),
@@ -307,26 +335,13 @@ export async function deleteUser(req, res) {
       });
     }
 
-    // Admin deletions are queued to prevent race conditions
-    // Non-admin deletions are direct (no need for queue)
     if (user.isAdmin) {
-      try {
-        await queueAdminOperation(async () => {
-          // Validate that deletion won't leave system with zero admins
-          await _validateAdminOperation(userId, "delete");
-          // Now delete
-          await _deleteUserById(userId);
-        });
-      } catch (err) {
-        if (err.message.includes("Cannot delete the last admin")) {
-          return res.status(403).json({
-            message: "Cannot delete the last admin. Promote another user to admin before removing this one.",
-          });
-        }
-        throw err;
+      const operation = await executeAdminOperation(userId, "delete", _deleteUserById);
+
+      if (operation.conflictMessage) {
+        return res.status(403).json({ message: operation.conflictMessage });
       }
     } else {
-      // Non-admin deletion is direct
       await _deleteUserById(userId);
     }
 
