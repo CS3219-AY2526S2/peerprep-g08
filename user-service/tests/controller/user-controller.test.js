@@ -331,6 +331,35 @@ describe("updateUser", () => {
     expect(res.json).toHaveBeenCalledWith({ message: "username already exists" });
   });
 
+  test("returns 409 when new email is already taken", async () => {
+    _findUserById.mockResolvedValue({ id: VALID_ID, username: "alice", email: "a@t.com" });
+    _findUserByEmail.mockResolvedValue({ id: OTHER_ID });
+
+    const req = { body: { email: "used@test.com" }, params: { id: VALID_ID } };
+    const res = mockRes();
+
+    await updateUser(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith({ message: "email already exists" });
+  });
+
+  test.each([
+    [{ email: "invalid-email" }, "Invalid email format."],
+    [{ username: "a" }, "Username must be at least 3 characters long."],
+    [{ password: "weak" }, "Password must be at least 8 characters long."],
+  ])("returns 400 when an update field is invalid", async (body, message) => {
+    _findUserById.mockResolvedValue({ id: VALID_ID, username: "alice", email: "a@t.com" });
+
+    const req = { body, params: { id: VALID_ID } };
+    const res = mockRes();
+
+    await updateUser(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({ message });
+  });
+
   test("returns 200 on a successful update", async () => {
     const existing = { id: VALID_ID, username: "alice", email: "a@t.com", isAdmin: false, createdAt: new Date() };
     _findUserById.mockResolvedValue(existing);

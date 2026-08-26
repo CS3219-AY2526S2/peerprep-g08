@@ -178,39 +178,27 @@ export async function getAllUsers(req, res) {
 }
 
 function getUserUpdateValidationError({ username, email, password }) {
-  if (email && !isValidEmail(email)) {
-    return "Invalid email format.";
-  }
+  const usernameValidation = validateUsername(username);
+  const passwordValidation = validatePassword(password);
+  const validations = [
+    { provided: email, valid: isValidEmail(email), message: "Invalid email format." },
+    { provided: username, ...usernameValidation },
+    { provided: password, ...passwordValidation },
+  ];
 
-  if (username) {
-    const usernameValidation = validateUsername(username);
-    if (!usernameValidation.valid) {
-      return usernameValidation.message;
-    }
-  }
-
-  if (password) {
-    const passwordValidation = validatePassword(password);
-    if (!passwordValidation.valid) {
-      return passwordValidation.message;
-    }
-  }
-
-  return null;
+  return validations.find(({ provided, valid }) => provided && !valid)?.message ?? null;
 }
 
 async function getUserUpdateConflict({ username, email, userId }) {
-  if (username) {
-    const userWithUsername = await _findUserByUsername(username);
-    if (userWithUsername && userWithUsername.id !== userId) {
-      return "username already exists";
-    }
-  }
+  const checks = [
+    { value: username, findUser: _findUserByUsername, message: "username already exists" },
+    { value: email, findUser: _findUserByEmail, message: "email already exists" },
+  ];
 
-  if (email) {
-    const userWithEmail = await _findUserByEmail(email);
-    if (userWithEmail && userWithEmail.id !== userId) {
-      return "email already exists";
+  for (const check of checks.filter(({ value }) => value)) {
+    const matchingUser = await check.findUser(check.value);
+    if (matchingUser && matchingUser.id !== userId) {
+      return check.message;
     }
   }
 
