@@ -61,6 +61,35 @@ describe('Question API Endpoints', () => {
         });
     });
 
+    describe('GET question filters', () => {
+        beforeEach(async () => {
+            await Question.create({
+                title: 'C++ Basics',
+                question: 'What is a pointer?',
+                answer: 'A variable that stores a memory address.',
+                difficulty: 'easy',
+                category: 'Programming Languages'
+            });
+        });
+
+        it('should treat title metacharacters as literal text', async () => {
+            const response = await request(app)
+                .get(`/api/questions/title/${encodeURIComponent('C++')}`);
+
+            expect(response.status).toBe(200);
+            expect(response.body).toHaveLength(1);
+            expect(response.body[0].title).toBe('C++ Basics');
+        });
+
+        it('should match a category without case-sensitive regex', async () => {
+            const response = await request(app)
+                .get('/api/questions/category/programming%20languages');
+
+            expect(response.status).toBe(200);
+            expect(response.body).toHaveLength(1);
+        });
+    });
+
     describe('POST /api/questions', () => {
         it('should create a new question when valid data is provided', async () => {
             const newQuestion = {

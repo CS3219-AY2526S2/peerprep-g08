@@ -18,11 +18,23 @@ interface CollabEditorProps {
   onCodeChange?: (code: string) => void;
 }
 
+interface AwarenessState {
+  selection?: {
+    anchor: Y.RelativePosition;
+    head: Y.RelativePosition;
+  };
+  user?: {
+    color: string;
+    name: string;
+  };
+}
+
 function hashUsernameToColor(username: string): string {
-  let hash = 0;
-  for (let i = 0; i < username.length; i++) {
-    hash = username.charCodeAt(i) + ((hash << 5) - hash);
-  }
+  const hash = Array.from(username).reduce(
+    (currentHash, character) =>
+      character.charCodeAt(0) + ((currentHash << 5) - currentHash),
+    0,
+  );
   return `hsl(${Math.abs(hash) % 360}, 70%, 50%)`;
 }
 
@@ -74,28 +86,24 @@ export default function CollabEditor({
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
     const yText = ydoc.getText("content");
-    const model = editor.getModel();
+    const model = editor.getModel()!;
     new MonacoBinding(
       yText,
-      model!,
+      model,
       new Set([editor]),
       wsProvider.awareness,
     );
 
     // Keep a debounced snapshot of code for AI context.
     // (We intentionally avoid emitting on every keystroke.)
-    let codeSnapshotTimeout: ReturnType<typeof setTimeout> | null = null;
+    let codeSnapshotTimeout: ReturnType<typeof setTimeout> | undefined;
     const emitCodeSnapshot = () => {
-      if (!onCodeChange) return;
-      onCodeChange(yText.toString());
+      onCodeChange!(yText.toString());
     };
 
     const handleYTextChange = () => {
-      if (!onCodeChange) return;
-      if (codeSnapshotTimeout) clearTimeout(codeSnapshotTimeout);
-      codeSnapshotTimeout = setTimeout(() => {
-        emitCodeSnapshot();
-      }, 200);
+      clearTimeout(codeSnapshotTimeout);
+      codeSnapshotTimeout = setTimeout(emitCodeSnapshot, 200);
     };
 
     if (onCodeChange) {
@@ -107,64 +115,87 @@ export default function CollabEditor({
       color: hashUsernameToColor(username),
     });
 
-    // debounce awareness changes
-    let awarenessTimeout: ReturnType<typeof setTimeout> | null = null;
+    let awarenessTimeout: ReturnType<typeof setTimeout> | undefined;
     const otherCursors = editor.createDecorationsCollection([]);
 
-    wsProvider.awareness.on("change", () => {
+    const processUserCursor = (
+      state: AwarenessState,
+      clientId: number,
+    ): monacoeditor.editor.IModelDeltaDecoration[] => {
+      const isRenderable = [
+        clientId !== wsProvider.awareness.clientID,
+        state.selection,
+        state.user,
+      ].every(Boolean);
+
+      if (!isRenderable) return [];
+
+      const selection = state.selection!;
+      const user = state.user!;
+
+      const anchor = Y.createAbsolutePositionFromRelativePosition(
+        selection.anchor,
+        ydoc,
+      );
+      const head = Y.createAbsolutePositionFromRelativePosition(
+        selection.head,
+        ydoc,
+      );
+
+      if (![anchor, head].every(Boolean)) return [];
+
+      const resolvedAnchor = anchor!;
+      const resolvedHead = head!;
+      injectCursorStyle(clientId, user.color, user.name);
+
+      const headPosition = model.getPositionAt(resolvedHead.index);
+      const selectionStart = model.getPositionAt(
+        Math.min(resolvedAnchor.index, resolvedHead.index),
+      );
+      const selectionEnd = model.getPositionAt(
+        Math.max(resolvedAnchor.index, resolvedHead.index),
+      );
+      const decorations: monacoeditor.editor.IModelDeltaDecoration[] = [
+        {
+          range: new monaco.Range(
+            headPosition.lineNumber,
+            headPosition.column,
+            headPosition.lineNumber,
+            headPosition.column,
+          ),
+          options: { className: `yjs-cursor-${clientId}` },
+        },
+        {
+          range: new monaco.Range(
+            selectionStart.lineNumber,
+            selectionStart.column,
+            selectionEnd.lineNumber,
+            selectionEnd.column,
+          ),
+          options: { inlineClassName: `yjs-selection-${clientId}` },
+        },
+      ];
+
+      const decorationCount = 1 + Number(
+        resolvedAnchor.index !== resolvedHead.index,
+      );
+      return decorations.slice(0, decorationCount);
+    };
+
+    const handleAwarenessChange = () => {
       otherCursors.set([]);
-      if (awarenessTimeout) clearTimeout(awarenessTimeout);
+
+      clearTimeout(awarenessTimeout);
       awarenessTimeout = setTimeout(() => {
-        const cursors: monacoeditor.editor.IModelDeltaDecoration[] = [];
-
-        wsProvider.awareness.getStates().forEach((state, clientId) => {
-          if (clientId === wsProvider.awareness.clientID) return;
-          if (!state.selection || !state.user) return;
-
-          const anchor = Y.createAbsolutePositionFromRelativePosition(
-            state.selection.anchor,
-            ydoc,
-          );
-          const head = Y.createAbsolutePositionFromRelativePosition(
-            state.selection.head,
-            ydoc,
-          );
-
-          if (!anchor || !head) return;
-
-          injectCursorStyle(clientId, state.user.color, state.user.name);
-
-          // handle cursor location
-          const headPos = model?.getPositionAt(head.index);
-          cursors.push({
-            range: new monaco.Range(
-              headPos?.lineNumber,
-              headPos?.column,
-              headPos?.lineNumber,
-              headPos?.column,
-            ),
-            options: { className: `yjs-cursor-${clientId}` },
-          });
-
-          if (anchor.index !== head.index) {
-            const selectionStartIdx = Math.min(anchor.index, head.index);
-            const selectionEndIdx = Math.max(anchor.index, head.index);
-            const selectionStartPos = model?.getPositionAt(selectionStartIdx);
-            const selectionEndPos = model?.getPositionAt(selectionEndIdx);
-            cursors.push({
-              range: new monaco.Range(
-                selectionStartPos?.lineNumber,
-                selectionStartPos?.column,
-                selectionEndPos?.lineNumber,
-                selectionEndPos?.column,
-              ),
-              options: { inlineClassName: `yjs-selection-${clientId}` },
-            });
-          }
-        });
+        const cursors = Array.from(wsProvider.awareness.getStates()).flatMap(
+          ([clientId, state]) =>
+            processUserCursor(state as AwarenessState, clientId),
+        );
         otherCursors.set(cursors);
       }, 100);
-    });
+    };
+
+    wsProvider.awareness.on("change", handleAwarenessChange);
 
     // Focus editor on mount
     editor.focus();
@@ -172,15 +203,15 @@ export default function CollabEditor({
     // Resize observer so editor fills its container when layout changes
     const ro = new ResizeObserver(() => editor.layout());
     const node = editor.getContainerDomNode();
-    if (node.parentElement) ro.observe(node.parentElement);
+    ro.observe(node.parentElement!);
 
-    return () => {
+    editor.onDidDispose(() => {
       ro.disconnect();
-      if (onCodeChange) {
-        yText.unobserve(handleYTextChange);
-      }
-      if (codeSnapshotTimeout) clearTimeout(codeSnapshotTimeout);
-    };
+      yText.unobserve(handleYTextChange);
+      wsProvider.awareness.off("change", handleAwarenessChange);
+      clearTimeout(codeSnapshotTimeout);
+      clearTimeout(awarenessTimeout);
+    });
   };
 
   // Sync language changes without remounting

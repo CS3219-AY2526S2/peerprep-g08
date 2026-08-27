@@ -1,30 +1,33 @@
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
-import { useEffect, useRef } from "react";
+import { useEffect, useState } from "react";
+
+const YJS_SERVER_URL =
+  import.meta.env.VITE_COLLAB_YJS_URL || "ws://localhost:3219/yjs";
+
+interface YjsSession {
+  ydoc: Y.Doc;
+  wsProvider: WebsocketProvider;
+}
+
+function createYjsSession(roomId: string): YjsSession {
+  const ydoc = new Y.Doc();
+  const wsProvider = new WebsocketProvider(YJS_SERVER_URL, roomId, ydoc);
+
+  return { ydoc, wsProvider };
+}
+
+function destroyYjsSession({ ydoc, wsProvider }: YjsSession) {
+  wsProvider.destroy();
+  ydoc.destroy();
+}
 
 export default function useYjs(roomId: string) {
-  const ydocRef = useRef<Y.Doc | null>(null);
-  const providerRef = useRef<WebsocketProvider | null>(null);
-
-  if (!ydocRef.current) {
-    ydocRef.current = new Y.Doc();
-  }
-  if (!providerRef.current) {
-    providerRef.current = new WebsocketProvider(
-      "ws://localhost:3219/yjs",
-      roomId,
-      ydocRef.current,
-    );
-  }
+  const [session] = useState(() => createYjsSession(roomId));
 
   useEffect(() => {
-    return () => {
-      providerRef.current?.destroy();
-      providerRef.current = null;
-      ydocRef.current?.destroy();
-      ydocRef.current = null;
-    };
-  }, [roomId]);
+    return () => destroyYjsSession(session);
+  }, [session]);
 
-  return { ydoc: ydocRef.current, wsProvider: providerRef.current };
+  return session;
 }

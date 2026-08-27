@@ -1,12 +1,48 @@
 const Question = require('../models/questionModel');
-const { search } = require('../routes/questionRoutes');
+
+const REQUIRED_QUESTION_FIELDS = [
+    'title',
+    'question',
+    'answer',
+    'difficulty',
+    'category'
+];
+
+const escapeRegex = (value) =>
+    value.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+
+const getQuestionData = ({
+    title,
+    question,
+    answer,
+    difficulty,
+    category,
+    tags,
+    examples
+}) => ({
+    title,
+    question,
+    answer,
+    difficulty,
+    category,
+    tags,
+    examples
+});
+
+const hasMissingRequiredField = (questionData) =>
+    REQUIRED_QUESTION_FIELDS.some((field) => !questionData[field]);
 
 // @desc    Get all questions
 // @route   GET /api/questions
 // @access  Public  
 const getAllQuestions = async (req, res) => {
-    const questions = await Question.find({})
-    res.status(200).json(questions)
+    try {
+        const questions = await Question.find({})
+        return res.status(200).json(questions)
+    } catch (err) {
+        console.error("[QUESTION-SERVICE] Error getting all questions:", err);
+        return res.status(500).json({ message: "Internal server error" })
+    }
 }
 
 // @desc    Get question by ID
@@ -17,13 +53,13 @@ const getQuestionById = async (req, res) => {
         const question = await Question.findById(req.params.id)
 
         if (!question) {
-            res.status(404).json({ message: "Question not found" })
-            return
+            return res.status(404).json({ message: "Question not found" })
         }
 
-        res.status(200).json(question)
+        return res.status(200).json(question)
     } catch (err) {
-        res.status(400).json({ message: "Invalid question ID" })
+        console.error("[QUESTION-SERVICE] Error getting question by ID:", err);
+        return res.status(400).json({ message: "Invalid question ID" })
     }
 }
 
@@ -33,12 +69,13 @@ const getQuestionById = async (req, res) => {
 const getQuestionsByTitle = async (req, res) => {
     try {
         const questions = await Question.find({
-            title: { $regex: req.params.title, $options: "i" }
+            title: { $regex: escapeRegex(req.params.title), $options: "i" }
         })
 
-        res.status(200).json(questions)
+        return res.status(200).json(questions)
     } catch (err) {
-        res.status(400).json({ message: "No questions found for this title" })
+        console.error("[QUESTION-SERVICE] Error searching questions by title:", err);
+        return res.status(400).json({ message: "No questions found for this title" })
     }
 }
 
@@ -47,16 +84,17 @@ const getQuestionsByTitle = async (req, res) => {
 // @access  Public
 const getQuestionsByCategory = async (req, res) => {
     try {
-        const questions = await Question.find({ category: { $regex: new RegExp(`^${req.params.category}$`, 'i') } })
+        const questions = await Question.find({ category: req.params.category })
+            .collation({ locale: 'en', strength: 2 })
 
-        if (!questions || questions.length === 0) {
-            res.status(404).json({ message: "No questions found for this category" })
-            return
+        if (questions.length === 0) {
+            return res.status(404).json({ message: "No questions found for this category" })
         }
 
-        res.status(200).json(questions)
+        return res.status(200).json(questions)
     } catch (err) {
-        res.status(400).json({ message: "Invalid category" })
+        console.error("[QUESTION-SERVICE] Error searching questions by category:", err);
+        return res.status(400).json({ message: "Invalid category" })
     }
 }
 
@@ -68,13 +106,13 @@ const getQuestionsByDifficulty = async (req, res) => {
         const questions = await Question.find({ difficulty: req.params.difficulty })
 
         if (!questions || questions.length === 0) {
-            res.status(404).json({ message: "No questions found for this difficulty" })
-            return
+            return res.status(404).json({ message: "No questions found for this difficulty" })
         }
 
-        res.status(200).json(questions)
+        return res.status(200).json(questions)
     } catch (err) {
-        res.status(400).json({ message: "Invalid difficulty" })
+        console.error("[QUESTION-SERVICE] Error searching questions by difficulty:", err);
+        return res.status(400).json({ message: "Invalid difficulty" })
     }
 }
 
@@ -155,10 +193,11 @@ const searchQuestions = async (req, res) => {
 
         const questions = await Question.aggregate(pipeline)
 
-        res.status(200).json(questions)
+        return res.status(200).json(questions)
 
     } catch (err) {
-        res.status(500).json({ message: "Search failed", error: err.message })
+        console.error("[QUESTION-SERVICE] Search failed:", err);
+        return res.status(500).json({ message: "Search failed", error: err.message })
     }
 }
 
@@ -166,26 +205,18 @@ const searchQuestions = async (req, res) => {
 // @route   POST /api/questions
 // @access  Public
 const addQuestion = async (req, res) => {
-    const { title, question, answer, difficulty, category, tags, examples } = req.body
+    const questionData = getQuestionData(req.body)
 
-    if (!title || !question || !answer || !difficulty || !category) {
-        res.status(400).json({ message: 'Please provide all required fields' })
-        return
+    if (hasMissingRequiredField(questionData)) {
+        return res.status(400).json({ message: 'Please provide all required fields' })
     }   
 
     try {
-        const newQuestion = await Question.create({
-            title,
-            question,
-            answer,
-            difficulty,
-            category,
-            tags,
-            examples,
-        })
-        res.status(201).json(newQuestion)
+        const newQuestion = await Question.create(questionData)
+        return res.status(201).json(newQuestion)
     } catch (err) {
-        res.status(400).json({ message: err.message })
+        console.error("[QUESTION-SERVICE] Error adding question:", err);
+        return res.status(400).json({ message: err.message })
     }   
 }
 
@@ -193,28 +224,28 @@ const addQuestion = async (req, res) => {
 // @route   PUT /api/questions/:id
 // @access  Public
 const updateQuestion = async (req, res) => {
-    const { title, question, answer, difficulty, category, tags, examples } = req.body
+    const questionData = getQuestionData(req.body)
 
-    if (!title || !question || !answer || !difficulty || !category) {
-        res.status(400).json({ message: 'Please provide all required fields' })
-        return
+    if (hasMissingRequiredField(questionData)) {
+        return res.status(400).json({ message: 'Please provide all required fields' })
     }   
 
     try {
         const updatedQuestion = await Question.findById(req.params.id)
-        updatedQuestion.title = title
-        updatedQuestion.question = question
-        updatedQuestion.answer = answer
-        updatedQuestion.difficulty = difficulty
-        updatedQuestion.category = category
-        updatedQuestion.tags = tags
-        updatedQuestion.examples = examples
+        
+        // Refatorado: Adicionado verificação para evitar manipulação de null pointer
+        if (!updatedQuestion) {
+            return res.status(404).json({ message: "Question not found" });
+        }
+
+        Object.assign(updatedQuestion, questionData)
 
         await updatedQuestion.save()
 
-        res.status(200).json(updatedQuestion)
+        return res.status(200).json(updatedQuestion)
     } catch (err) {
-        res.status(400).json({ message: "Invalid question data" })
+        console.error("[QUESTION-SERVICE] Error updating question:", err);
+        return res.status(400).json({ message: "Invalid question data" })
     }
 }
 
@@ -224,13 +255,19 @@ const updateQuestion = async (req, res) => {
 const deleteQuestion = async (req, res) => {
     try {
         const deletedQuestion = await Question.findById(req.params.id)
+        
+        // Refatorado: Adicionado verificação para evitar manipulação de null pointer
+        if (!deletedQuestion) {
+            return res.status(404).json({ message: "Question not found" });
+        }
+
         await deletedQuestion.deleteOne()
-        res.status(200).json({ message: "Question deleted successfully" })
+        return res.status(200).json({ message: "Question deleted successfully" })
     } catch (err) {
-        res.status(400).json({ message: "Invalid question ID" })
+        console.error("[QUESTION-SERVICE] Error deleting question:", err);
+        return res.status(400).json({ message: "Invalid question ID" })
     }
 }
-
 
 module.exports = {
     getAllQuestions,
