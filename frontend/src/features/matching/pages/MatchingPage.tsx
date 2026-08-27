@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import io, { Socket } from "socket.io-client";
 import PageLayout from "../../../shared/components/PageLayout";
@@ -19,6 +19,26 @@ const SOCKET_URL =
   import.meta.env.VITE_MATCHING_API_GATEWAY_URL ||
   "http://localhost:3000";
 
+const AUTH_ERROR_PATTERN = /authentication|token|expired/i;
+
+const CONNECTION_ERROR_DETAILS = [
+  {
+    prefix: "Failed to connect to matching service",
+    recoveryHint: "",
+  },
+  {
+    prefix: "Authentication failed",
+    recoveryHint: ". Please log out and log in again.",
+  },
+] as const;
+
+const MATCH_VALIDATION_ERRORS: Record<string, string | null> = {
+  "false:false": "Please select at least one language and one topic",
+  "false:true": "Please select at least one language and one topic",
+  "true:false": "Not connected to matching service. Please refresh.",
+  "true:true": null,
+};
+
 export default function MatchingPage() {
   const navigate = useNavigate();
   const { data: user } = useUserProfile();
@@ -31,13 +51,12 @@ export default function MatchingPage() {
   const [isSearching, setIsSearching] = useState(false);
   const [searchStatus, setSearchStatus] = useState("Searching for a match...");
   const [error, setError] = useState<string | null>(null);
-  const [socket, setSocket] = useState<Socket | null>(null);
+  const socketRef = useRef<Socket | null>(null);
 
   // Initialize socket connection
   useEffect(() => {
     const token = localStorage.getItem("token");
 
-    // 1. Variável explicativa: Configuração do Socket isolada para melhorar a legibilidade
     const socketOptions = {
       path: "/api/matching-service/socket.io",
       auth: { token: `Bearer ${token}` },
@@ -49,26 +68,18 @@ export default function MatchingPage() {
 
     const newSocket = io(SOCKET_URL, socketOptions);
 
-    // 2. Extract Function: Funções auxiliares (callbacks) separadas para reduzir a complexidade
     const handleConnect = () => {
       console.log("Connected to matching service");
       setError(null);
-      // CORREÇÃO: Atualização de estado movida para cá (assíncrona)
-      setSocket(newSocket);
+      socketRef.current = newSocket;
     };
 
     const handleConnectError = (err: Error) => {
       console.error("Socket connection error:", err.message);
-      const isAuthError =
-        err.message.includes("Authentication") ||
-        err.message.includes("token") ||
-        err.message.includes("expired");
+      const errorType = Number(AUTH_ERROR_PATTERN.test(err.message));
+      const { prefix, recoveryHint } = CONNECTION_ERROR_DETAILS[errorType];
 
-      if (isAuthError) {
-        setError(`Authentication failed: ${err.message}. Please log out and log in again.`);
-      } else {
-        setError(`Failed to connect to matching service: ${err.message}`);
-      }
+      setError(`${prefix}: ${err.message}${recoveryHint}`);
     };
 
     const handleMatchFound = (data: { roomUrl?: { roomId: string }; partnerUserId: string }) => {
@@ -99,7 +110,7 @@ export default function MatchingPage() {
     const handleDisconnect = () => {
       console.log("Disconnected from matching service");
       setError("Connection lost to matching service");
-      setSocket(null); // Limpeza de segurança extra
+      socketRef.current = null;
     };
 
     const handleError = (err: unknown) => {
@@ -107,7 +118,6 @@ export default function MatchingPage() {
       setError(`Connection error to matching service: ${getErrorMessage(err)}`);
     };
 
-    // 3. Registro dos eventos de forma limpa e estruturada
     newSocket.on("connect", handleConnect);
     newSocket.on("connect_error", handleConnectError);
     newSocket.on("match-found", handleMatchFound);
@@ -117,36 +127,36 @@ export default function MatchingPage() {
     newSocket.on("disconnect", handleDisconnect);
     newSocket.on("error", handleError);
 
-    // Limpeza ao desmontar o componente
     return () => {
+      socketRef.current = null;
       newSocket.disconnect();
     };
   }, [navigate]);
 
-  // 1. Extract Function: Função nomeada para o botão de fechar erro, limpando o JSX
   const handleCloseError = () => {
     setError(null);
   };
 
-  const handleFindMatch = async () => {
-    // 2. Early Return: Agrupando todas as validações de erro no início
-    if (!selectedLanguages.length || !selectedTopics.length) {
-      setError("Please select at least one language and one topic");
-      return;
-    }
+  const handleFindMatch = () => {
+    const socket = socketRef.current;
+    const hasSelections = Math.min(
+      selectedLanguages.length,
+      selectedTopics.length,
+    ) > 0;
+    const validationKey = `${hasSelections}:${Boolean(socket)}`;
+    const validationError = MATCH_VALIDATION_ERRORS[validationKey];
 
-    if (!socket) {
-      setError("Not connected to matching service. Please refresh.");
+    if (validationError) {
+      setError(validationError);
       setIsSearching(false);
       return;
     }
 
-    // 3. Execução segura: Só altera os estados de busca se as validações passarem
     setError(null);
     setIsSearching(true);
     setSearchStatus("Searching for a match...");
 
-    socket.emit("find-match", {
+    socket!.emit("find-match", {
       userId: user?.id,
       username: user?.username,
       languages: selectedLanguages,
@@ -157,7 +167,7 @@ export default function MatchingPage() {
 
   const handleCancel = () => {
     setIsSearching(false);
-    socket?.emit("cancel-match");
+    socketRef.current?.emit("cancel-match");
   };
 
   return (
